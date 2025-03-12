@@ -1,231 +1,196 @@
-// Copyright 2017. All rights reserved.
-// Institute of Measurement and Control Systems
-// Karlsruhe Institute of Technology, Germany
-//
-// authors:
-//  Johannes Graeter (johannes.graeter@kit.edu)
-//  and others
+#pragma once
 
 #include "internal/landmark_selection_scheme_helpers.hpp"
+
+#include <chrono>
+#include <exception>
+#include <fstream>
+#include <random>
+#include <sstream>
+#include <algorithm>
+#include <map>
+#include <vector>
+#include <iostream>
+#include <iterator>
 
 namespace keyframe_bundle_adjustment {
 namespace landmark_helpers {
 
+// Choose near landmarks based on highest flow values.
 std::vector<LandmarkId> chooseNearLmIds(size_t max_num_lms,
                                         const std::vector<LandmarkId>& near_ids,
                                         const std::map<LandmarkId, double>& map_flow) {
-    // It is possible, that landmarks are not present in map since f.e. tracks are too short.
-    // Sort those out first.
-    ///@todo How long does that take?
+    // Filter out landmark IDs not present in the flow map.
     std::vector<LandmarkId> ids;
-    for (const auto& el : near_ids) {
-        if (map_flow.find(el) != map_flow.cend()) {
-            ids.push_back(el);
+    for (const auto& id : near_ids) {
+        if (map_flow.find(id) != map_flow.end()) {
+            ids.push_back(id);
         }
     }
 
-    // Init output.
-    size_t cur_num_lms = std::min(max_num_lms, ids.size());
-    std::vector<LandmarkId> out;
-    out.resize(cur_num_lms);
+    size_t num_to_select = std::min(max_num_lms, ids.size());
+    std::vector<LandmarkId> out(num_to_select);
 
-    // Get the ids woth biggest flow.
-    auto it = std::partial_sort_copy(
-        ids.cbegin(), ids.cend(), out.begin(), out.end(), [&map_flow](const auto& a, const auto& b) {
+    // Partial sort copy using descending flow.
+    auto num_selected = std::partial_sort_copy(
+        ids.cbegin(), ids.cend(), out.begin(), out.end(),
+        [&map_flow](LandmarkId a, LandmarkId b) {
             return map_flow.at(a) > map_flow.at(b);
         });
-    if (it != out.end()) {
-        throw std::runtime_error(
-            "In LandmarkSelectionSchemeHelpers: Not all chosen ids of near field have been copied!");
+    if (num_selected != out.end()) {
+        throw std::runtime_error("In LandmarkSelectionSchemeHelpers: Not all chosen IDs of near field have been copied!");
     }
-
     return out;
 }
 
+// Choose middle landmarks by shuffling and selecting the first max_num elements.
 std::vector<LandmarkId> chooseMiddleLmIds(size_t max_num, const std::vector<LandmarkId>& middle_ids) {
-    // shuffle vector and copy first elements
     size_t num = std::min(max_num, middle_ids.size());
-    std::vector<LandmarkId> a;
-    a.reserve(middle_ids.size());
-    std::copy(middle_ids.cbegin(), middle_ids.cend(), std::back_inserter(a));
+    std::vector<LandmarkId> shuffled = middle_ids; // copy
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(shuffled.begin(), shuffled.end(), gen);
 
-    std::random_shuffle(a.begin(), a.end());
     std::vector<LandmarkId> out;
     out.reserve(num);
-    std::copy(a.cbegin(), std::next(a.cbegin(), num), std::back_inserter(out));
+    std::copy(shuffled.cbegin(), shuffled.cbegin() + num, std::back_inserter(out));
     return out;
 }
 
+// Choose far landmarks by counting measurements in keyframes and selecting those with the highest counts.
 std::vector<LandmarkId> chooseFarLmIds(size_t max_num,
                                        const std::vector<LandmarkId>& ids_far,
                                        const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes) {
-
-    // far: measruements with highest number of measurements
-    // Here we don't distinguigh between measurements with and without depth
-    // count occurency in keyframes for each landmark
-
     std::map<LandmarkId, unsigned int> count_map;
     for (const auto& id : ids_far) {
-        count_map[id] = 0;
+        unsigned int count = 0;
         for (const auto& kf : keyframes) {
             if (kf.second->hasMeasurement(id)) {
-                count_map.at(id) = count_map.at(id) + 1;
+                ++count;
             }
         }
+        count_map[id] = count;
     }
 
-    // Add n landmarks with longest tracks to selection.
-    std::vector<LandmarkId> chosen_ids_far;
-    {
-        size_t num = std::min(max_num, ids_far.size());
-
-        chosen_ids_far.resize(num);
-
-        auto it = std::partial_sort_copy(
-            ids_far.cbegin(),
-            ids_far.cend(),
-            chosen_ids_far.begin(),
-            chosen_ids_far.end(),
-            [&count_map](const auto& a, const auto& b) { return count_map.at(a) > count_map.at(b); });
-    }
-
+    size_t num = std::min(max_num, ids_far.size());
+    std::vector<LandmarkId> chosen_ids_far(num);
+    std::partial_sort_copy(ids_far.cbegin(), ids_far.cend(),
+                           chosen_ids_far.begin(), chosen_ids_far.end(),
+                           [&count_map](LandmarkId a, LandmarkId b) {
+                               return count_map.at(a) > count_map.at(b);
+                           });
     return chosen_ids_far;
 }
 
+// Calculate flow for each valid landmark from a sorted vector of keyframes.
 std::map<LandmarkId, double> calcFlow(const std::vector<LandmarkId>& valid_lm_ids,
                                       const std::vector<Keyframe::ConstPtr>& sorted_kf_ptrs,
                                       bool use_mean) {
     std::map<LandmarkId, double> out;
     for (const auto& lm_id : valid_lm_ids) {
-        // get measruements from keyframes with min and max timestamps
         std::map<CameraId, Measurement> last_meas;
-        std::map<CameraId, double> mean;
-        std::map<CameraId, int> occurence;
-        for (const auto& el : sorted_kf_ptrs) {
-            std::map<CameraId, Measurement> cur_meas = el->getMeasurements(lm_id);
+        std::map<CameraId, double> flow_sum;
+        std::map<CameraId, int> occurrence;
+        for (const auto& kf : sorted_kf_ptrs) {
+            auto cur_meas = kf->getMeasurements(lm_id);
             for (const auto& cam_meas : cur_meas) {
-                if (last_meas.find(cam_meas.first) != last_meas.cend()) {
+                if (last_meas.find(cam_meas.first) != last_meas.end()) {
                     double flow = (last_meas.at(cam_meas.first).toEigen2d() - cam_meas.second.toEigen2d()).norm();
-                    mean[cam_meas.first] = mean[cam_meas.first] + flow;
-                    occurence[cam_meas.first] = occurence[cam_meas.first] + 1;
+                    flow_sum[cam_meas.first] += flow;
+                    occurrence[cam_meas.first] += 1;
                 }
                 last_meas[cam_meas.first] = cam_meas.second;
             }
         }
-
         if (use_mean) {
-            auto mean_iter = mean.begin();
-            auto occurence_iter = occurence.cbegin();
-            if (mean.size() != occurence.size()) {
-                throw std::runtime_error("mean.size()=" + std::to_string(mean.size()) + " != occurence.size()=" +
-                                         std::to_string(occurence.size()));
-            }
-            for (; mean_iter != mean.end() && occurence_iter != occurence.cend(); ++mean_iter, ++occurence_iter) {
-                mean_iter->second /= occurence_iter->second;
+            for (auto& kv : flow_sum) {
+                if (occurrence[kv.first] > 0) {
+                    kv.second /= occurrence[kv.first];
+                }
             }
         }
-
-        // get max and assign flow as pixel per second
-        auto it = std::max_element(
-            mean.cbegin(), mean.cend(), [](const auto& a, const auto& b) { return a.second < b.second; });
-        out[lm_id] = it->second;
+        double max_flow = 0.0;
+        for (const auto& kv : flow_sum) {
+            max_flow = std::max(max_flow, kv.second);
+        }
+        out[lm_id] = max_flow;
     }
-
     return out;
 }
 
+// Calculate the mean flow based on the oldest and newest measurements.
 std::map<LandmarkId, double> calcMeanFlow2(const std::vector<LandmarkId>& valid_lm_ids,
                                            const std::vector<Keyframe::ConstPtr>& sorted_kf_ptrs) {
     std::map<LandmarkId, double> out;
-
-    std::cout << "oldest ts=" << sorted_kf_ptrs.front()->timestamp_ << std::endl;
-    std::cout << "newest ts=" << sorted_kf_ptrs.back()->timestamp_ << std::endl;
+    std::cout << "Oldest ts = " << sorted_kf_ptrs.front()->timestamp_ << std::endl;
+    std::cout << "Newest ts = " << sorted_kf_ptrs.back()->timestamp_ << std::endl;
 
     for (const auto& lm_id : valid_lm_ids) {
-        // get measruements from keyframes with min and max timestamps
-        std::map<CameraId, Measurement> oldest_measurement_per_cam;
+        std::map<CameraId, Measurement> oldest_meas;
         TimestampNSec oldest_ts = 0;
-        getMeasurementFromKf(
-            sorted_kf_ptrs.cbegin(), sorted_kf_ptrs.cend(), lm_id, oldest_measurement_per_cam, oldest_ts);
+        getMeasurementFromKf(sorted_kf_ptrs.cbegin(), sorted_kf_ptrs.cend(), lm_id, oldest_meas, oldest_ts);
 
-        std::map<CameraId, Measurement> newest_measurement_per_cam;
+        std::map<CameraId, Measurement> newest_meas;
         TimestampNSec newest_ts = 0;
-        getMeasurementFromKf(
-            sorted_kf_ptrs.crbegin(), sorted_kf_ptrs.crend(), lm_id, newest_measurement_per_cam, newest_ts);
+        getMeasurementFromKf(sorted_kf_ptrs.crbegin(), sorted_kf_ptrs.crend(), lm_id, newest_meas, newest_ts);
 
-        // don't add if lm not on keyframes
-        if (newest_measurement_per_cam.empty() || oldest_measurement_per_cam.empty()) {
+        if (newest_meas.empty() || oldest_meas.empty())
             continue;
-        }
 
-        // evaluate flow per time
         double dt_sec = convert(newest_ts - oldest_ts);
-        if (dt_sec <= 0.) {
-            std::cout << "dt=" << dt_sec << std::endl;
-            std::cout << "ts=" << oldest_ts << std::endl;
+        if (dt_sec <= 0.0) {
+            std::cout << "dt = " << dt_sec << std::endl;
+            std::cout << "ts = " << oldest_ts << std::endl;
             std::cout << "---------1-----------" << std::endl;
             continue;
         }
 
-        // calc all permutations with all cams for this lm id and take max
-        std::vector<double> data;
-        data.reserve(oldest_measurement_per_cam.size() * newest_measurement_per_cam.size());
-        for (const auto& el_last : newest_measurement_per_cam) {
-            for (const auto& el_first : oldest_measurement_per_cam) {
-                //                // dot product can be bigger than 1. because of numeric inaccuracy
-                //                // -> round to 1.0 if it is bigger
-                //                Eigen::Vector3d last_ray = el_last.second;
-                //                last_ray.normalize();
-                //                Eigen::Vector3d first_ray = el_first.second;
-                //                first_ray.normalize();
-                //                double d = last_ray.dot(first_ray);
-                //                double sign = d > 0. ? 1. : -1.;
-                //                double angle = std::acos(sign * std::min(std::abs(d), 1.0));
-                //                angles.push_back(angle);
-
-                data.push_back((el_last.second.toEigen2d() - el_first.second.toEigen2d()).norm() / dt_sec);
+        std::vector<double> flows;
+        flows.reserve(oldest_meas.size() * newest_meas.size());
+        for (const auto& last_pair : newest_meas) {
+            for (const auto& first_pair : oldest_meas) {
+                flows.push_back((last_pair.second.toEigen2d() - first_pair.second.toEigen2d()).norm() / dt_sec);
             }
         }
-        // get max and assign flow as pixel per second
-        auto it = std::max_element(data.begin(), data.end(), [](const auto& a, const auto& b) { return a < b; });
-        out[lm_id] = (*it);
+        double max_flow = *std::max_element(flows.begin(), flows.end());
+        out[lm_id] = max_flow;
     }
-
     return out;
 }
 
+// Overload: calculate flow from keyframes provided as a map.
 std::map<LandmarkId, double> calcFlow(const std::vector<LandmarkId>& valid_lm_ids,
                                       const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes,
                                       bool use_mean) {
-    // Get all keyframes and sort them by time stamps.
-    std::vector<Keyframe::ConstPtr> kf_ptrs;
-    kf_ptrs.reserve(keyframes.size());
-    for (const auto& el : keyframes) {
-        kf_ptrs.push_back(el.second);
+    std::vector<Keyframe::ConstPtr> sorted_kf_ptrs;
+    sorted_kf_ptrs.reserve(keyframes.size());
+    for (const auto& kv : keyframes) {
+        sorted_kf_ptrs.push_back(kv.second);
     }
+    std::sort(sorted_kf_ptrs.begin(), sorted_kf_ptrs.end(), [](const auto& a, const auto& b) {
+        return a->timestamp_ < b->timestamp_;
+    });
+    return calcFlow(valid_lm_ids, sorted_kf_ptrs, use_mean);
+}
 
-    std::sort(kf_ptrs.begin(), kf_ptrs.end(), [](const auto& a, const auto& b) { return a < b; });
-    return calcFlow(valid_lm_ids, kf_ptrs, use_mean);
-}
-}
+} // namespace landmark_helpers
+
 namespace keyframe_helpers {
-std::vector<Keyframe::ConstPtr> getSortedKeyframes(const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes) {
-    // Put keyframes into vector and sort them
-    std::vector<Keyframe::ConstPtr> kf_ptrs_sorted;
-    kf_ptrs_sorted.reserve(keyframes.size());
 
-    for (const auto& kf : keyframes) {
-        // only use active keyframes
-        if (kf.second->is_active_) {
-            kf_ptrs_sorted.push_back(kf.second);
+// Returns a sorted vector of active keyframes (newest first).
+std::vector<Keyframe::ConstPtr> getSortedKeyframes(const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes) {
+    std::vector<Keyframe::ConstPtr> sorted;
+    sorted.reserve(keyframes.size());
+    for (const auto& kv : keyframes) {
+        if (kv.second->is_active_) {
+            sorted.push_back(kv.second);
         }
     }
-
-    // Newest keyframe is first.
-    std::sort(kf_ptrs_sorted.begin(), kf_ptrs_sorted.end(), [](const auto& a, const auto& b) {
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
         return a->timestamp_ > b->timestamp_;
     });
-    return kf_ptrs_sorted;
+    return sorted;
 }
-}
-}
+
+} // namespace keyframe_helpers
+} // namespace keyframe_bundle_adjustment
