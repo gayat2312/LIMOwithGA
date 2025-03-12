@@ -1,46 +1,43 @@
-// Copyright 2018. All rights reserved.
-// Institute of Measurement and Control Systems
-// Karlsruhe Institute of Technology, Germany
-//
-// authors:
-//  Johannes Graeter (johannes.graeter@kit.edu)
-//  and others
-
 #pragma once
+
 #include <map>
 #include <vector>
+#include <stdexcept>
+#include <utility>  // for std::forward
 
 #include "definitions.hpp"
-
 #include "trimmer_fix.hpp"
 #include "trimmer_quantile.hpp"
 
 namespace robust_optimization {
 
 /**
- * @brief This a factory that constructs a trimmer and applies it.
- *  if you implement a new trimmer, register it as a type and
- *  in apply_trimmer.
- * @param data; data to be trimmed,
- *              templated since we do not care about ids.
- * @param type; filter type to be applied.
- * @return outliers; return Ids of outliers.
+ * @brief Factory function that constructs a trimmer and applies it to filter out outliers.
+ *
+ * If you implement a new trimmer, register it as a type and handle it in this function.
+ *
+ * @tparam Id Type used for identifying data points.
+ * @tparam Args Additional arguments to be forwarded to the trimmer constructor.
+ * @param data The data to be trimmed; keys are identifiers and values are associated double values.
+ * @param type The type of filter (trimmer) to be applied.
+ * @param filter_args Additional parameters forwarded to the trimmer constructor.
+ * @return std::vector<Id> Vector containing the identifiers of outliers.
+ * @throws std::runtime_error if the provided TrimmerType is not defined.
  */
 template <typename Id, typename... Args>
-std::vector<Id> getOutliers(const std::map<Id, double>& data, TrimmerType type, Args... filter_args) {
+std::vector<Id> getOutliers(const std::map<Id, double>& data, TrimmerType type, Args&&... filter_args) {
     switch (type) {
     case TrimmerType::Fix: {
-        TrimmerFix t(filter_args...);
+        TrimmerFix t(std::forward<Args>(filter_args)...);
         return t.getOutliers(data);
     }
     case TrimmerType::Quantile: {
-        TrimmerQuantile t(filter_args...);
+        TrimmerQuantile t(std::forward<Args>(filter_args)...);
         return t.getOutliers(data);
     }
     default:
-        std::runtime_error("In apply_trimmer: TrimmerType not defined");
+        throw std::runtime_error("In getOutliers: TrimmerType not defined");
     }
+}
 
-    return std::vector<Id>{};
-}
-}
+} // namespace robust_optimization
