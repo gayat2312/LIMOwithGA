@@ -1,41 +1,42 @@
-// Copyright 2018. All rights reserved.
-// Institute of Measurement and Control Systems
-// Karlsruhe Institute of Technology, Germany
-//
-// authors:
-//  Johannes Graeter (johannes.graeter@kit.edu)
-//  and others
-
 #pragma once
 
 #include <map>
 #include <vector>
 
 namespace robust_optimization {
+
 /**
-* @class TrimmerFix
-* @par
-*
-* Most simple concrete trimmer.
-* Uses fix residual threshold for outlier rejection.
-*/
+ * @class TrimmerFix
+ * @brief Simple concrete trimmer that uses a fixed residual threshold for outlier rejection.
+ *
+ * This trimmer filters out data points whose residuals exceed a predefined threshold.
+ */
 class TrimmerFix {
-public: // Public methods.
-    // Default constructor.
-    explicit TrimmerFix(double outlier_threshold) : outlier_thres_(outlier_threshold) {
-        ;
-    }
+public:
+    /**
+     * @brief Constructor with a fixed outlier threshold.
+     * @param outlier_threshold Residual threshold beyond which data points are considered outliers.
+     */
+    explicit TrimmerFix(double outlier_threshold) : outlier_thres_(outlier_threshold) {}
 
-    // Default move.
-    TrimmerFix(TrimmerFix&& other) = default;
-    TrimmerFix& operator=(TrimmerFix&& other) = default;
-
-    // Default copy.
+    // Default move and copy operations
+    TrimmerFix(TrimmerFix&& other) noexcept = default;
+    TrimmerFix& operator=(TrimmerFix&& other) noexcept = default;
     TrimmerFix(const TrimmerFix& other) = default;
     TrimmerFix& operator=(const TrimmerFix& other) = default;
 
+    /**
+     * @brief Filters out outliers based on the fixed threshold.
+     * 
+     * Iterates over the provided residuals map and collects the identifiers for which
+     * the corresponding residual exceeds the threshold.
+     *
+     * @tparam Id Type of the identifier.
+     * @param residuals_input A map of identifiers to residual values.
+     * @return std::vector<Id> Vector containing identifiers of the outliers.
+     */
     template <typename Id>
-    std::vector<Id> getOutliers(const std::map<Id, double>& residuals_input) {
+    std::vector<Id> getOutliers(const std::map<Id, double>& residuals_input) const {
         std::vector<Id> outliers;
         for (const auto& el : residuals_input) {
             if (el.second > outlier_thres_) {
@@ -46,6 +47,7 @@ public: // Public methods.
     }
 
 private:
-    double outlier_thres_; ///< Fix threshold. Residuals > thres will be rejected.
+    double outlier_thres_; ///< Fixed threshold: residuals greater than this value are rejected.
 };
-} // end of namespace
+
+} // namespace robust_optimization
