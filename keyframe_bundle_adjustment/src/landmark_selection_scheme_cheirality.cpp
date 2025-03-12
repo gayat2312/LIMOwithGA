@@ -8,25 +8,20 @@
 
 #include "internal/landmark_selection_scheme_cheirality.hpp"
 #include <chrono>
+#include <iostream>
 
 namespace keyframe_bundle_adjustment {
 
 namespace {
-/**
- * @brief is_landmark_cheiral, test if landmark fullfills cheirality constraint for all cameras on
- * all keyframes
- * @param keyframes
- * @param lm
- * @return
- */
+
+// Checks whether a landmark fulfills the cheirality constraint for all active keyframes.
 bool is_landmark_cheiral(const LandmarkSchemeBase::KeyframeMap& keyframes,
                          const std::pair<LandmarkId, Landmark::ConstPtr>& lm) {
-    for (const auto& id_kf : keyframes) {
-        const auto& kf = id_kf.second;
-        if (kf->is_active_) {
-            // test cheirality for every projected landmark in cams
-            for (const auto& cam_lm : kf->getProjectedLandmarkPosition(lm)) {
-                if (cam_lm.second.z() < 0.) {
+    for (const auto& [kf_id, kf_ptr] : keyframes) {
+        if (kf_ptr->is_active_) {
+            // Test cheirality for every projected landmark in all cameras.
+            for (const auto& cam_lm : kf_ptr->getProjectedLandmarkPosition(lm)) {
+                if (cam_lm.second.z() < 0.0) {
                     return false;
                 }
             }
@@ -34,37 +29,37 @@ bool is_landmark_cheiral(const LandmarkSchemeBase::KeyframeMap& keyframes,
     }
     return true;
 }
-}
+
+} // anonymous namespace
 
 std::set<LandmarkId> LandmarkRejectionSchemeCheirality::getSelection(
-    const LandmarkSchemeBase::LandmarkMap& landmarks, const LandmarkSchemeBase::KeyframeMap& keyframes) const {
+    const LandmarkSchemeBase::LandmarkMap& landmarks,
+    const LandmarkSchemeBase::KeyframeMap& keyframes) const {
 
-    std::set<LandmarkId> out;
-    auto start_time_cheriality = std::chrono::steady_clock::now();
+    std::set<LandmarkId> selected;
+    auto start_time = std::chrono::steady_clock::now();
 
-    // transform landmarks into frames where they were observed
-    // if all landmarks are in front of the camera, select landmark
+    // Iterate over all landmarks and select those that fulfill the cheirality constraint.
     for (const auto& lm_el : landmarks) {
         if (is_landmark_cheiral(keyframes, lm_el)) {
-            out.insert(lm_el.first);
+            selected.insert(lm_el.first);
         }
     }
 
-    std::cout << "Duration cheirality check="
-              << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                                       start_time_cheriality)
-                     .count()
+    std::cout << "Duration cheirality check = "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - start_time).count()
               << " ms" << std::endl;
 
-    return out;
+    return selected;
 }
 
 LandmarkRejectionSchemeBase::ConstPtr LandmarkRejectionSchemeCheirality::createConst() {
-    return LandmarkRejectionSchemeBase::ConstPtr(new LandmarkRejectionSchemeCheirality());
+    return std::make_shared<LandmarkRejectionSchemeCheirality>();
 }
 
 LandmarkRejectionSchemeBase::Ptr LandmarkRejectionSchemeCheirality::create() {
+    return std::make_shared<LandmarkRejectionSchemeCheirality>();
+}
 
-    return LandmarkRejectionSchemeBase::Ptr(new LandmarkRejectionSchemeCheirality());
-}
-}
+} // namespace keyframe_bundle_adjustment
