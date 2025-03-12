@@ -1,37 +1,37 @@
+#!/usr/bin/env python3
 from mchgenalg import GeneticAlgorithm
 import mchgenalg
 import numpy as np
 import os
+from pathlib import Path
+import subprocess
 
 timesEvaluated = 0
 bestrmse = -1
 
-# First, define function that will be used to evaluate the fitness
 def fitness_function(genome):
-
-    global timesEvaluated
+    global timesEvaluated, bestrmse
     timesEvaluated += 1
+    print(f"Fitness function invoked {timesEvaluated} times")
 
-    print("Fitness function invoked "+str(timesEvaluated)+" times")
-
-    #setting parameter values using genome
+    # Setting parameter values using genome
     # outlier_rejection_quantile in keyframe_ba_monolid.launch
     out_rej_quant = decode_function(genome[0:10])
     if out_rej_quant > 1:
         out_rej_quant = 1
 
     # max_number_landmarks_near_bin in keyframe_ba_monolid.launch
-    max_number_landmarks_near_bin = decode_function(genome[11:22])*1000
+    max_number_landmarks_near_bin = decode_function(genome[11:22]) * 1000
     if max_number_landmarks_near_bin > 999:
         max_number_landmarks_near_bin = 999.0
 
     # max_number_landmarks_middle_bin in keyframe_ba_monolid.launch
-    max_number_landmarks_middle_bin = decode_function(genome[23:33])*1000
+    max_number_landmarks_middle_bin = decode_function(genome[23:33]) * 1000
     if max_number_landmarks_middle_bin > 999:
         max_number_landmarks_middle_bin = 999.0
 
     # max_number_landmarks_far_bin in keyframe_ba_monolid.launch
-    max_number_landmarks_far_bin = decode_function(genome[34:44])*1000
+    max_number_landmarks_far_bin = decode_function(genome[34:44]) * 1000
     if max_number_landmarks_far_bin > 999:
         max_number_landmarks_far_bin = 999.0
 
@@ -40,112 +40,112 @@ def fitness_function(genome):
     if shrubbery_weight > 1:
         shrubbery_weight = 1
 
+    print("Saving parameters to params.yaml...")
+    params_path = Path("/tmp/params.yaml")
+    with params_path.open("w", encoding="utf-8") as output:
+        output.write(f"outlier_rejection_quantile: {out_rej_quant}\n")
+        output.write(f"max_number_landmarks_near_bin: {max_number_landmarks_near_bin}\n")
+        output.write(f"max_number_landmarks_middle_bin: {max_number_landmarks_middle_bin}\n")
+        output.write(f"max_number_landmarks_far_bin: {max_number_landmarks_far_bin}\n")
+        output.write(f"shrubbery_weight: {shrubbery_weight}\n")
 
-    print('Saving parameters to params.yaml...')
-    with open('/tmp/params.yaml', 'w') as output:
-        output.write("outlier_rejection_quantile: " + str(out_rej_quant) + "\n") 
-        output.write("max_number_landmarks_near_bin: " + str(max_number_landmarks_near_bin) + "\n") 
-        output.write("max_number_landmarks_middle_bin: " + str(max_number_landmarks_middle_bin) + "\n") 
-        output.write("max_number_landmarks_far_bin: " + str(max_number_landmarks_far_bin) + "\n") 
-        output.write("shrubbery_weight: " + str(shrubbery_weight) + "\n") 
-
+    # Call external script to calculate rmse value
     query = "./script.sh"
+    print(f"Running command: {query}")
+    subprocess.run(query, shell=True, check=True)
 
-    #calling limo to calculate rmse value
-    os.system(query)     
+    # Read fitness value as root mean square value (rmse) from text files
+    rmse1_path = Path("/tmp/rmse_output1.txt")
+    rmse2_path = Path("/tmp/rmse_output2.txt")
+    with rmse1_path.open("r", encoding="utf-8") as file:
+        rmse1 = float(file.read().strip())
+    with rmse2_path.open("r", encoding="utf-8") as file:
+        rmse2 = float(file.read().strip())
 
-    # read fitness value as root mean square value (rmse) from text file
-    file = open('/tmp/rmse_output1.txt', 'r')
-    rmse1 = float(file.read())
+    # Average of the two RMSE values
+    rmse_avg = (rmse1 + rmse2) / 2
 
-    file = open('/tmp/rmse_output2.txt', 'r')
-    rmse2 = float(file.read())
+    print("Saving fitnesses for each evaluation")
+    fitnesses_path = Path("/tmp/fitnesses_dump.txt")
+    with fitnesses_path.open("a", encoding="utf-8") as output:
+        output.write(f"{timesEvaluated} {rmse1} {rmse2} {rmse_avg}\n")
 
-    # Average of two RMSE values
-    rmse_avg = rmse1 + rmse2
-    rmse_avg = rmse_avg/2
+    # Remove rmse output files if they exist
+    for rmse_file in (rmse1_path, rmse2_path):
+        if rmse_file.exists():
+            rmse_file.unlink()
 
-    print('Saving fitnesses for each evaluation')
-    with open('/tmp/fitnesses_dump.txt', 'a') as output:
-        output.write("" + str(timesEvaluated) + " " + str(rmse1) + " " + str(rmse2) + " " + str(rmse_avg) + "\n") 
-
-    os.system("rm -f /tmp/rmse_output1.txt")
-    os.system("rm -f /tmp/rmse_output2.txt")
-
-    global bestrmse
-    if bestrmse == -1:
+    # Update best fitness if the current run is better
+    if bestrmse == -1 or rmse_avg < bestrmse:
         bestrmse = rmse_avg
-    if rmse_avg < bestrmse:
-        bestrmse = rmse_avg
-        with open('/tmp/BestParameters.txt', 'a') as output:
-            output.write("Best rmse value : " + str(bestrmse) + "\n")
-            output.write("outlier_rejection_quantile = " + str(out_rej_quant) + "\n")
-            output.write("max_number_landmarks_near_bin = " + str(max_number_landmarks_near_bin) + "\n")
-            output.write("max_number_landmarks_middle_bin = " + str(max_number_landmarks_middle_bin) + "\n")
-            output.write("max_number_landmarks_far_bin = " + str(max_number_landmarks_far_bin) + "\n")
-            output.write("shrubbery_weight = " + str(shrubbery_weight) + "\n")
-            output.write("=================================================")
-            output.write("\n")
+        best_params_path = Path("/tmp/BestParameters.txt")
+        with best_params_path.open("a", encoding="utf-8") as output:
+            output.write(f"Best rmse value : {bestrmse}\n")
+            output.write(f"outlier_rejection_quantile = {out_rej_quant}\n")
+            output.write(f"max_number_landmarks_near_bin = {max_number_landmarks_near_bin}\n")
+            output.write(f"max_number_landmarks_middle_bin = {max_number_landmarks_middle_bin}\n")
+            output.write(f"max_number_landmarks_far_bin = {max_number_landmarks_far_bin}\n")
+            output.write(f"shrubbery_weight = {shrubbery_weight}\n")
+            output.write("=================================================\n")
 
-    print('Average rmse for this run:' + str(rmse_avg))
-
-    print("Best rmse so far : "+str(bestrmse))
-    return 1/rmse_avg
+    print(f"Average rmse for this run: {rmse_avg}")
+    print(f"Best rmse so far: {bestrmse}")
+    return 1 / rmse_avg
 
 def decode_function(genome_partial):
-
     prod = 0
-    for i,e in reversed(list(enumerate(genome_partial))):
-        if e == False:
-            prod += 0
-        else:
-            prod += 2**abs(i-len(genome_partial)+1)
-    return prod/1000
+    n = len(genome_partial)
+    # Iterate in reverse order
+    for i, e in reversed(list(enumerate(genome_partial))):
+        if e:
+            prod += 2 ** abs(i - n + 1)
+    return prod / 1000
 
-if os.path.isfile('/tmp/fitnesses_dump.txt'):
-    os.system("rm -f /tmp/fitnesses_dump.txt")
-# Configure the algorithm:
-population_size = 50
-genome_length = 55
-ga = GeneticAlgorithm(fitness_function)
-ga.generate_binary_population(size=population_size, genome_length=genome_length)
+def main():
+    # Remove previous fitness dump file if it exists
+    fitnesses_dump_path = Path("/tmp/fitnesses_dump.txt")
+    if fitnesses_dump_path.exists():
+        fitnesses_dump_path.unlink()
 
-# How many pairs of individuals should be picked to mate
-ga.number_of_pairs = 5
+    # Configure the algorithm
+    population_size = 50
+    genome_length = 55
+    ga = GeneticAlgorithm(fitness_function)
+    ga.generate_binary_population(size=population_size, genome_length=genome_length)
 
-# Selective pressure from interval [1.0, 2.0]
-# the lower value, the less will the fitness play role
-ga.selective_pressure = 1.5
-ga.mutation_rate = 0.1
+    # How many pairs of individuals should be picked to mate
+    ga.number_of_pairs = 5
 
-# If two parents have the same genotype, ignore them and generate TWO random parents
-# This helps preventing premature convergence
-ga.allow_random_parent = True # default True
-# Use single point crossover instead of uniform crossover
-ga.single_point_cross_over = False # default False
+    # Selective pressure from interval [1.0, 2.0]
+    # The lower the value, the less the fitness will play a role
+    ga.selective_pressure = 1.5
+    ga.mutation_rate = 0.1
 
-# Run 100 iteration of the algorithm
-# You can call the method several times and adjust some parameters
-# (e.g. number_of_pairs, selective_pressure, mutation_rate,
-# allow_random_parent, single_point_cross_over)
-ga.run(50) # default 1000
+    # If two parents have the same genotype, ignore them and generate TWO random parents.
+    # This helps prevent premature convergence.
+    ga.allow_random_parent = True  # default True
+    # Use single point crossover instead of uniform crossover
+    ga.single_point_cross_over = False  # default False
 
-best_genome, best_fitness = ga.get_best_genome()
+    # Run 50 iterations of the algorithm
+    ga.run(50)
 
-print("BEST FITNESS IS")
-print(best_fitness)
-print("BEST CHROMOSOME IS")
-print(best_genome)
-print("It's decoded value is:")
-print("outlier_rejection_quantile = " + str(decode_function(best_genome[0:10])))
-print("max_number_landmarks_near_bin = " + str(decode_function(best_genome[11:22])*1000))
-print("max_number_landmarks_middle_bin = " + str(decode_function(best_genome[23:33])*1000))
-print("max_number_landmarks_far_bin = " + str(decode_function(best_genome[34:44])*1000))
-print("shrubbery_weight = " + str(decode_function(best_genome[45:55])))
-#print("noise_epsilon = " + str(decode_function(best_genome[56:66])))
+    best_genome, best_fitness = ga.get_best_genome()
 
-# If you want, you can have a look at the population:
-population = ga.population
+    print("BEST FITNESS IS")
+    print(best_fitness)
+    print("BEST CHROMOSOME IS")
+    print(best_genome)
+    print("Its decoded value is:")
+    print(f"outlier_rejection_quantile = {decode_function(best_genome[0:10])}")
+    print(f"max_number_landmarks_near_bin = {decode_function(best_genome[11:22]) * 1000}")
+    print(f"max_number_landmarks_middle_bin = {decode_function(best_genome[23:33]) * 1000}")
+    print(f"max_number_landmarks_far_bin = {decode_function(best_genome[34:44]) * 1000}")
+    print(f"shrubbery_weight = {decode_function(best_genome[45:55])}")
 
-# and the fitness of each element:
-fitness_vector = ga.get_fitness_vector()
+    # Optionally, you can inspect the full population and fitness vector:
+    population = ga.population
+    fitness_vector = ga.get_fitness_vector()
+
+if __name__ == "__main__":
+    main()
