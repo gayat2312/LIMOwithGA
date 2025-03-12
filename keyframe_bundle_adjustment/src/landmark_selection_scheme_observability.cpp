@@ -7,174 +7,183 @@
 //  and others
 
 #include "internal/landmark_selection_scheme_observability.hpp"
-
 #include "internal/landmark_selection_scheme_helpers.hpp"
 
 #include <boost/accumulators/accumulators.hpp>
 #include <boost/accumulators/statistics/density.hpp>
 #include <boost/accumulators/statistics/stats.hpp>
-
 #include <chrono>
+#include <sstream>
+#include <stdexcept>
+#include <algorithm>
+#include <iostream>
 
 namespace keyframe_bundle_adjustment {
+namespace landmark_helpers {
 
-namespace {
-
-using LmIdVec = std::vector<LandmarkId>;
-
-void assignMeasure(double bound_near_middle,
-                   double bound_middle_far,
-                   double data,
-                   const LandmarkId& lm_id,
-                   LmIdVec& near_ids,
-                   LmIdVec& middle_ids,
-                   LmIdVec& far_ids) {
-    if (bound_near_middle <= data) {
-        near_ids.push_back(lm_id);
-    } else if (bound_near_middle > data && data > bound_middle_far) {
-        middle_ids.push_back(lm_id);
-    } else if (bound_middle_far >= data) {
-        far_ids.push_back(lm_id);
-    } else {
-        std::stringstream ss;
-        ss << "there is something wrong with the bins, angle=" << data;
-        throw std::runtime_error(ss.str());
-    }
-}
-
-void addVec(const LmIdVec& vec_to_add, LmIdVec& vec) {
-    // Put all in one vector
-    vec.reserve(vec.size() + std::distance(vec_to_add.cbegin(), vec_to_add.cend()));
-    vec.insert(vec.end(), vec_to_add.cbegin(), vec_to_add.cend());
-}
-} // end of anonymous namespace
-
-std::set<LandmarkId> LandmarkSparsificationSchemeObservability::getSelection(const LandmarkMap& landmarks,
-                                                                             const KeyframeMap& keyframes) const {
-    auto categorized_lms = getCategorizedSelection(landmarks, keyframes);
-    std::set<LandmarkId> out;
-
-    for (const auto& el : categorized_lms) {
-        out.insert(el.first);
-    }
-    return out;
-}
-
-std::map<LandmarkId, LandmarkCategorizatonInterface::Category> LandmarkSparsificationSchemeObservability::
-    getCategorizedSelection(const LandmarkMap& landmarks, const KeyframeMap& keyframes) const {
-    // Convert to ids.
-    std::vector<LandmarkId> lm_ids;
-    lm_ids.reserve(landmarks.size());
-    for (const auto& el : landmarks) {
-        lm_ids.push_back(el.first);
-    }
-    std::map<LandmarkId, double> map_data = landmark_helpers::calcFlow(lm_ids, keyframes);
-    for (auto& el : map_data) {
-        el.second = std::abs(el.second);
-    }
-    auto it = std::max_element(
-        map_data.cbegin(), map_data.cend(), [](const auto& a, const auto& b) { return a.second < b.second; });
-    const double& max_flow = it->second;
-
-    // split landmarks in 3 bins + 2 rest bins
-    // so we have bins: lower outliers, bin1, bin2, bin3 ,upper outliers
-    // bin.first is the lower boundary of the bin
-    // all that is smaller than bin 2: far field
-    // between bin2 and bin3: middle field
-    // bigger than bin3: near field
-    //
-    // We also distinguish between landmarks with depth and wiithout depth in middle
-    // and near field in order to prefer landmarks with depth measurement
-    std::vector<LandmarkId> near_ids;
-    std::vector<LandmarkId> middle_ids;
-    std::vector<LandmarkId> far_ids;
-
-    std::vector<LandmarkId> near_ids_with_depth;
-    std::vector<LandmarkId> middle_ids_with_depth;
-
-    for (const auto& lm_id_vec : landmarks) {
-        const auto& lm_id = lm_id_vec.first;
-        const auto& cur_data = map_data.at(lm_id);
-
-        if (lm_id_vec.second->has_measured_depth) {
-            assignMeasure(params_.bin_params_.bound_near_middle * max_flow,
-                          params_.bin_params_.bound_middle_far * max_flow,
-                          cur_data,
-                          lm_id,
-                          near_ids_with_depth,
-                          middle_ids_with_depth,
-                          far_ids);
-        } else {
-            assignMeasure(params_.bin_params_.bound_near_middle * max_flow,
-                          params_.bin_params_.bound_middle_far * max_flow,
-                          cur_data,
-                          lm_id,
-                          near_ids,
-                          middle_ids,
-                          far_ids);
+// Chooses near landmarks by selecting those with the highest flow values.
+std::vector<LandmarkId> chooseNearLmIds(size_t max_num_lms,
+                                        const std::vector<LandmarkId>& near_ids,
+                                        const std::map<LandmarkId, double>& map_flow) {
+    std::vector<LandmarkId> ids;
+    for (const auto& id : near_ids) {
+        if (map_flow.find(id) != map_flow.end()) {
+            ids.push_back(id);
         }
     }
-    std::cout << "num near with depth=" << near_ids_with_depth.size() << "\n"
-              << "num near without depth=" << near_ids.size() << "\n"
-              << "num middle with depth=" << middle_ids_with_depth.size() << "\n"
-              << "num middle without depth=" << middle_ids.size() << "\n"
-              << "num far with/without depth=" << far_ids.size() << std::endl;
-
-    std::vector<LandmarkId> chosen_ids_near;
-    {
-        // near: measruements with biggest angles
-        // First choose those with depth then without
-        chosen_ids_near = landmark_helpers::chooseNearLmIds(
-            params_.bin_params_.max_num_landmarks_near, near_ids_with_depth, map_data);
-
-        std::vector<LandmarkId> chosen_ids_near_wo_depth;
-        int num = params_.bin_params_.max_num_landmarks_near - chosen_ids_near.size();
-        chosen_ids_near_wo_depth = landmark_helpers::chooseNearLmIds(num, near_ids, map_data);
-
-        addVec(chosen_ids_near_wo_depth, chosen_ids_near);
+    size_t num_to_select = std::min(max_num_lms, ids.size());
+    std::vector<LandmarkId> out(num_to_select);
+    auto num_selected = std::partial_sort_copy(
+        ids.cbegin(), ids.cend(), out.begin(), out.end(),
+        [&map_flow](LandmarkId a, LandmarkId b) { return map_flow.at(a) > map_flow.at(b); });
+    if (num_selected != out.end()) {
+        throw std::runtime_error("In LandmarkSelectionSchemeHelpers: Not all chosen IDs of near field have been copied!");
     }
-
-    std::vector<LandmarkId> chosen_ids_middle;
-    {
-        // middle: random
-        // choose those with depth
-        chosen_ids_middle =
-            landmark_helpers::chooseMiddleLmIds(params_.bin_params_.max_num_landmarks_middle, middle_ids_with_depth);
-        // if there is a pensum left add measrues without depth
-        std::vector<LandmarkId> chosen_ids_middle_wo_depth;
-        int num = params_.bin_params_.max_num_landmarks_middle - chosen_ids_middle.size();
-        chosen_ids_middle_wo_depth = landmark_helpers::chooseMiddleLmIds(num, middle_ids);
-
-        addVec(chosen_ids_middle_wo_depth, chosen_ids_middle);
-    }
-
-
-    // Choose far ids
-    std::vector<LandmarkId> chosen_ids_far =
-        landmark_helpers::chooseFarLmIds(params_.bin_params_.max_num_landmarks_far, far_ids, keyframes);
-
-    std::map<LandmarkId, LandmarkCategorizatonInterface::Category> out;
-    // write the chosen lms to selection
-    for (const auto& el : chosen_ids_near) {
-        out[el] = LandmarkCategorizatonInterface::Category::NearField;
-    }
-    for (const auto& el : chosen_ids_middle) {
-        out[el] = LandmarkCategorizatonInterface::Category::MiddleField;
-    }
-    for (const auto& el : chosen_ids_far) {
-        out[el] = LandmarkCategorizatonInterface::Category::FarField;
-    }
-
     return out;
 }
 
-LandmarkSparsificationSchemeBase::ConstPtr LandmarkSparsificationSchemeObservability::createConst(Parameters p) {
-
-    return LandmarkSparsificationSchemeBase::ConstPtr(new LandmarkSparsificationSchemeObservability(p));
+// Chooses middle landmarks by shuffling and selecting a random subset.
+std::vector<LandmarkId> chooseMiddleLmIds(size_t max_num, const std::vector<LandmarkId>& middle_ids) {
+    size_t num = std::min(max_num, middle_ids.size());
+    std::vector<LandmarkId> shuffled(middle_ids);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(shuffled.begin(), shuffled.end(), gen);
+    std::vector<LandmarkId> out;
+    out.reserve(num);
+    std::copy(shuffled.cbegin(), shuffled.cbegin() + num, std::back_inserter(out));
+    return out;
 }
 
-LandmarkSparsificationSchemeBase::Ptr LandmarkSparsificationSchemeObservability::create(Parameters p) {
+// Chooses far landmarks by counting their occurrences across keyframes.
+std::vector<LandmarkId> chooseFarLmIds(size_t max_num,
+                                       const std::vector<LandmarkId>& ids_far,
+                                       const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes) {
+    std::map<LandmarkId, unsigned int> count_map;
+    for (const auto& id : ids_far) {
+        unsigned int count = 0;
+        for (const auto& kf : keyframes) {
+            if (kf.second->hasMeasurement(id)) {
+                ++count;
+            }
+        }
+        count_map[id] = count;
+    }
+    size_t num_to_select = std::min(max_num, ids_far.size());
+    std::vector<LandmarkId> chosen_ids_far(num_to_select);
+    std::partial_sort_copy(ids_far.cbegin(), ids_far.cend(),
+                           chosen_ids_far.begin(), chosen_ids_far.end(),
+                           [&count_map](LandmarkId a, LandmarkId b) { return count_map.at(a) > count_map.at(b); });
+    return chosen_ids_far;
+}
 
-    return LandmarkSparsificationSchemeBase::Ptr(new LandmarkSparsificationSchemeObservability(p));
+// Calculates the maximum flow (in pixel/second) for each landmark from a sorted keyframe vector.
+std::map<LandmarkId, double> calcFlow(const std::vector<LandmarkId>& valid_lm_ids,
+                                      const std::vector<Keyframe::ConstPtr>& sorted_kf_ptrs,
+                                      bool use_mean) {
+    std::map<LandmarkId, double> out;
+    for (const auto& lm_id : valid_lm_ids) {
+        std::map<CameraId, Measurement> last_meas;
+        std::map<CameraId, double> flow_sum;
+        std::map<CameraId, int> occurrence;
+        for (const auto& kf : sorted_kf_ptrs) {
+            auto cur_meas = kf->getMeasurements(lm_id);
+            for (const auto& cam_meas : cur_meas) {
+                if (last_meas.find(cam_meas.first) != last_meas.end()) {
+                    double flow = (last_meas.at(cam_meas.first).toEigen2d() - cam_meas.second.toEigen2d()).norm();
+                    flow_sum[cam_meas.first] += flow;
+                    occurrence[cam_meas.first] += 1;
+                }
+                last_meas[cam_meas.first] = cam_meas.second;
+            }
+        }
+        if (use_mean) {
+            for (auto& kv : flow_sum) {
+                if (occurrence[kv.first] > 0) {
+                    kv.second /= occurrence[kv.first];
+                }
+            }
+        }
+        double max_flow = 0.0;
+        for (const auto& kv : flow_sum) {
+            max_flow = std::max(max_flow, kv.second);
+        }
+        out[lm_id] = max_flow;
+    }
+    return out;
 }
+
+// Calculates the maximum flow using the oldest and newest measurements.
+std::map<LandmarkId, double> calcMeanFlow2(const std::vector<LandmarkId>& valid_lm_ids,
+                                           const std::vector<Keyframe::ConstPtr>& sorted_kf_ptrs) {
+    std::map<LandmarkId, double> out;
+    std::cout << "Oldest ts = " << sorted_kf_ptrs.front()->timestamp_ << std::endl;
+    std::cout << "Newest ts = " << sorted_kf_ptrs.back()->timestamp_ << std::endl;
+
+    for (const auto& lm_id : valid_lm_ids) {
+        std::map<CameraId, Measurement> oldest_meas;
+        TimestampNSec oldest_ts = 0;
+        getMeasurementFromKf(sorted_kf_ptrs.cbegin(), sorted_kf_ptrs.cend(), lm_id, oldest_meas, oldest_ts);
+
+        std::map<CameraId, Measurement> newest_meas;
+        TimestampNSec newest_ts = 0;
+        getMeasurementFromKf(sorted_kf_ptrs.crbegin(), sorted_kf_ptrs.crend(), lm_id, newest_meas, newest_ts);
+
+        if (newest_meas.empty() || oldest_meas.empty()) continue;
+
+        double dt_sec = convert(newest_ts - oldest_ts);
+        if (dt_sec <= 0.0) {
+            std::cout << "dt = " << dt_sec << std::endl;
+            std::cout << "ts = " << oldest_ts << std::endl;
+            std::cout << "---------1-----------" << std::endl;
+            continue;
+        }
+
+        std::vector<double> flows;
+        flows.reserve(oldest_meas.size() * newest_meas.size());
+        for (const auto& last_pair : newest_meas) {
+            for (const auto& first_pair : oldest_meas) {
+                flows.push_back((last_pair.second.toEigen2d() - first_pair.second.toEigen2d()).norm() / dt_sec);
+            }
+        }
+        double max_flow = *std::max_element(flows.begin(), flows.end());
+        out[lm_id] = max_flow;
+    }
+    return out;
 }
+
+// Overloaded calcFlow that takes keyframes as a map.
+std::map<LandmarkId, double> calcFlow(const std::vector<LandmarkId>& valid_lm_ids,
+                                      const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes,
+                                      bool use_mean) {
+    std::vector<Keyframe::ConstPtr> sorted_kf_ptrs;
+    sorted_kf_ptrs.reserve(keyframes.size());
+    for (const auto& kv : keyframes) {
+        sorted_kf_ptrs.push_back(kv.second);
+    }
+    std::sort(sorted_kf_ptrs.begin(), sorted_kf_ptrs.end(),
+              [](const auto& a, const auto& b) { return a->timestamp_ < b->timestamp_; });
+    return calcFlow(valid_lm_ids, sorted_kf_ptrs, use_mean);
+}
+
+} // namespace landmark_helpers
+
+namespace keyframe_helpers {
+
+// Returns a sorted vector of active keyframes (newest first).
+std::vector<Keyframe::ConstPtr> getSortedKeyframes(const std::map<KeyframeId, Keyframe::ConstPtr>& keyframes) {
+    std::vector<Keyframe::ConstPtr> sorted;
+    sorted.reserve(keyframes.size());
+    for (const auto& kv : keyframes) {
+        if (kv.second->is_active_) {
+            sorted.push_back(kv.second);
+        }
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        return a->timestamp_ > b->timestamp_;
+    });
+    return sorted;
+}
+
+} // namespace keyframe_helpers
+} // namespace keyframe_bundle_adjustment
