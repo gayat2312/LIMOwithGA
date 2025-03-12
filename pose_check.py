@@ -1,33 +1,34 @@
-import os
+#!/usr/bin/env python3
+from pathlib import Path
 
-num_lines = sum(1 for line in open('/tmp/poses_dump.txt'))
-# 1098 - sequence 01
-# 268 - sequence 04
+# Define the file path
+file_path = Path('/tmp/poses_dump.txt')
+
+# Read file content and count lines
+try:
+    content = file_path.read_text(encoding='utf-8')
+except Exception as e:
+    print(f"Error reading file: {e}")
+    exit(1)
+
+lines = content.splitlines()
+num_lines = len(lines)
+print(f"Initial number of lines: {num_lines}")
+
+# If there are more than 1098 lines, trim the file to 1098 lines
 if num_lines > 1098:
-    print("modifying poses dump to 1098 poses")
-    file = open('/tmp/poses_dump.txt', "r+", encoding = "utf-8")
+    print("Modifying poses dump to 1098 poses")
+    new_content = "\n".join(lines[:1098]) + "\n"
+    try:
+        file_path.write_text(new_content, encoding='utf-8')
+    except Exception as e:
+        print(f"Error writing file: {e}")
+        exit(1)
 
-    #Move the pointer (similar to a cursor in a text editor) to the end of the file. 
-    file.seek(0, os.SEEK_END)
-
-    #This code means the following code skips the very last character in the file - 
-    #i.e. in the case the last line is null we delete the last line 
-    #and the penultimate one
-    pos = file.tell() - 1
-
-    #Read each character in the file one at a time from the penultimate 
-    #character going backwards, searching for a newline character
-    #If we find a new line, exit the search
-    while pos > 0 and file.read(1) != "\n":
-        pos -= 1
-        file.seek(pos, os.SEEK_SET)
-
-    #So long as we're not at the start of the file, delete all the characters ahead of this position
-    if pos > 0:
-        file.seek(pos, os.SEEK_SET)
-        file.truncate()
-
-    file.close()
-
-num_lines = sum(1 for line in open('/tmp/poses_dump.txt'))
-print(num_lines)   
+# Read back and print the final number of lines
+try:
+    updated_lines = file_path.read_text(encoding='utf-8').splitlines()
+    print(f"Final number of lines: {len(updated_lines)}")
+except Exception as e:
+    print(f"Error reading file after modification: {e}")
+    exit(1)
