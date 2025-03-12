@@ -6,7 +6,6 @@
 #include <ros/ros.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
-
 #include <message_filters/sync_policies/approximate_time.h>
 
 #include <matches_msg_ros/MatchesMsg.h>
@@ -15,85 +14,69 @@
 
 #include <keyframe_bundle_adjustment/bundle_adjuster_keyframes.hpp>
 #include <keyframe_bundle_adjustment/keyframe_selector.hpp>
-
 #include "keyframe_bundle_adjustment_ros_tool/MonoStandaloneInterface.h"
 
-// //////////////////////////////////
-// Forward declarations
-//
+// Forward declarations in the keyframe_bundle_adjustment namespace.
 namespace keyframe_bundle_adjustment {
-class BundleAdjusterKeyframes;
-}
-namespace keyframe_bundle_adjustment {
-class KeyframeSelector;
+    class BundleAdjusterKeyframes;
+    class KeyframeSelector;
 }
 
 namespace keyframe_bundle_adjustment_ros_tool {
 
 class MonoStandalone {
-
-    using Interface = MonoStandaloneInterface;
-    using ReconfigureConfig = MonoStandaloneConfig;
-    using ReconfigureServer = dynamic_reconfigure::Server<ReconfigureConfig>;
-
-    using TrackletsMsg = matches_msg_depth_ros::MatchesMsgWithOutlierFlag;
-    using CameraInfoMsg = sensor_msgs::CameraInfo;
-
-    using ApproximateTime = message_filters::sync_policies::ApproximateTime<TrackletsMsg, CameraInfoMsg>;
-    using Synchronizer = message_filters::Synchronizer<ApproximateTime>;
-
 public:
-    MonoStandalone(ros::NodeHandle, ros::NodeHandle);
+    /**
+     * @brief Constructor: Initializes the node with public and private node handles.
+     * @param nh Public node handle.
+     * @param nh_private Private node handle.
+     */
+    MonoStandalone(ros::NodeHandle nh, ros::NodeHandle nh_private);
 
     /**
-     * @brief maybeSendPoseTf, if tf frame ids are set in interface, pusblish last keyframe pose in
-     * tf
-     * @param timestamp, timestamp at which it shall be published
-     * @param last_pose, pose toi be published
+     * @brief Publishes the last keyframe pose as a TF transform if TF frame IDs are set.
+     * @param timestamp Timestamp at which the transform should be published.
+     * @param pose The pose to be published.
      */
     void maybeSendPoseTf(ros::Time timestamp, Eigen::Isometry3d pose);
 
-
 private:
-    // /////////////////////////////////////////////////////
-    // ROS STUFF
-    //
+    // ROS-related functions.
     void setupDiagnostics();
-    void checkSensorStatus(diagnostic_updater::DiagnosticStatusWrapper&);
+    void checkSensorStatus(diagnostic_updater::DiagnosticStatusWrapper& status_wrapper);
+    void callbackSubscriber(const matches_msg_depth_ros::MatchesMsgWithOutlierFlag::ConstPtr& tracklets_msg,
+                            const sensor_msgs::CameraInfo::ConstPtr& camera_info_msg);
+    void reconfigureRequest(const MonoStandaloneConfig&, uint32_t);
 
-    void callbackSubscriber(const TrackletsMsg::ConstPtr& tracklets_msg,
-                            const CameraInfoMsg::ConstPtr& camera_info_msg);
-    void reconfigureRequest(const ReconfigureConfig&, uint32_t);
+    // Interface and dynamic reconfigure server.
+    MonoStandaloneInterface interface_;
+    dynamic_reconfigure::Server<MonoStandaloneConfig> reconfigure_server_;
 
-    Interface interface_;
-    ReconfigureServer reconfigure_server_;
-
+    // TF components.
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
     tf2_ros::TransformBroadcaster tf_broadcaster_;
+
+    // Message synchronization.
+    using TrackletsMsg = matches_msg_depth_ros::MatchesMsgWithOutlierFlag;
+    using CameraInfoMsg = sensor_msgs::CameraInfo;
+    using ApproximateTime = message_filters::sync_policies::ApproximateTime<TrackletsMsg, CameraInfoMsg>;
+    using Synchronizer = message_filters::Synchronizer<ApproximateTime>;
     std::unique_ptr<Synchronizer> sync_;
 
-    diagnostic_updater::Updater updater_; ///< Diagnostic updater
-    // std::unique_ptr<diagnostic_updater::DiagnosedPublisher<std_msgs::Header>>
-    // publisherDiagnosed_;
-    diagnostic_msgs::DiagnosticStatus diagnostic_status_; ///< Current diagnostic status
+    // Diagnostics updater.
+    diagnostic_updater::Updater updater_;
+    diagnostic_msgs::DiagnosticStatus diagnostic_status_;
 
-    ///////////////////////////////////////
-    /// \brief bundle_adjuster_ptr_, class for doing the bundle adjustment
-    ///
+    // Bundle adjustment components.
     keyframe_bundle_adjustment::BundleAdjusterKeyframes::Ptr bundle_adjuster_;
-
-    //////////////////////////////////////////////////
-    /// \brief keyframe_selector_ptr_, selection for keyframes
-    ///
     keyframe_bundle_adjustment::KeyframeSelector keyframe_selector_;
 
-    //    Eigen::Isometry3d motion_camera_t0_t1; ///< save prior, so that if 5 point fails, we still have a prior
+    // Extrinsic calibration: transform from vehicle to camera.
+    Eigen::Isometry3d trf_camera_vehicle;
 
-    Eigen::Isometry3d trf_camera_vehicle; ///< extrinsic calibraion of camera defined from vechicle
-                                          /// frame to camera frame
-                                          ///
-    double last_ts_solved_{-10000000000}; ///< Last timestamp when bundle_adjuster_.solve was called, negative, so ba is
-                                          ///called quickly at init.
+    // Timestamp of the last bundle adjustment solution; negative value forces an early run.
+    double last_ts_solved_{-10000000000};
 };
+
 } // namespace keyframe_bundle_adjustment_ros_tool
