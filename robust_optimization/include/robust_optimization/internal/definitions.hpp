@@ -1,13 +1,13 @@
-// Copyright 2018. All rights reserved.
-// Institute of Measurement and Control Systems
-// Karlsruhe Institute of Technology, Germany
-//
-// authors:
-//  Johannes Graeter (johannes.graeter@kit.edu)
-//  and others
-
 #pragma once
 
 namespace robust_optimization {
-enum class TrimmerType { Fix, Quantile };
-}
+
+/**
+ * @brief Enum class representing the available trimmer types.
+ */
+enum class TrimmerType {
+    Fix,      ///< Fixed trimmer type.
+    Quantile  ///< Quantile-based trimmer type.
+};
+
+} // namespace robust_optimization
